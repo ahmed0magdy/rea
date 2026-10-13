@@ -1,7 +1,13 @@
 STATUS: DONE - rebased onto upstream main; #2571 already fixed upstream (#2781), so the PR now fixes #2572 only; head 43c67f7
-UPDATED: 2026-10-13T14:11:03Z
+UPDATED: 2026-10-13T23:37:18Z
 BRANCH: contrib/child-process-call-facts
 MODE: Auto
+
+## Owner reminder acknowledged
+
+- I will not open, reopen or comment on any PR or issue, on the fork or upstream. I have not done so in this session; the only GitHub writes were pushes to `contrib/child-process-call-facts` and `notes/status`.
+- No check-ins, wakeups or loops are scheduled, and I will not create any.
+- The work is DONE and the session is idle. Everything below is unchanged from the previous update (head `43c67f7`).
 
 ## What happened
 
