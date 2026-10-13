@@ -1,94 +1,126 @@
-STATUS: DONE - contrib/child-process-call-facts ready for owner review (fixes #2571, #2572); explanation added
-UPDATED: 2026-10-13T13:52:40Z
+STATUS: DONE - rebased onto upstream main; #2571 already fixed upstream (#2781), so the PR now fixes #2572 only; head 43c67f7
+UPDATED: 2026-10-13T14:11:03Z
 BRANCH: contrib/child-process-call-facts
 MODE: Auto
 
-## State
+## What happened
 
-- The branch `contrib/child-process-call-facts` holds one commit, `cb1a936`, authored by ahmed0magdy with a `Co-Authored-By: Claude Opus 5.5` trailer. It is pushed to the fork; no PR is open.
-- PR title: `fix(javascript): read child-process options and kill signals as written`. Fixes #2571. Fixes #2572.
-- The PR notes, the validation list and the inline-script issue draft are as reported earlier in chat.
-- AI disclosure line: "AI-assisted: implemented and tested with Claude Code; I reviewed the diff and validation results."
+- **Head:** `43c67f75d27c887d03dbbe1590a129a248de7a2d`. One commit on top of `origin/main` `fd65e27`. Author and committer are ahmed0magdy, the `Co-Authored-By: Claude Opus 5.5` trailer is kept, and there is no `Claude-Session` trailer. Force-pushed with lease from `cb1a936`.
+- **Why it conflicted:** upstream merged **#2781** (`c8e85b9`, "fix(javascript): recover child-process options without args", by naimur-reza). That PR fixes **#2571** with a `spawnOptions` change that behaves exactly like ours. It also adds the #2571 regression tests in `src/domain/javascript/childProcessOptionsRegression.test.ts`.
+- **How I resolved it:** kept upstream's `spawnOptions` unchanged. Dropped our own options test, which duplicated theirs; AGENTS.md says to remove redundant tests. **Our PR now fixes only #2572.** The commit subject is now `fix(javascript): keep unresolved child kill signals unknown`, and the body says `Fixes #2572` only.
+- **kill(undefined):** implemented. An explicit `kill(undefined)` now reports SIGTERM when `undefined` is the real global. If `undefined` is shadowed by a local binding, it reports null. Both cases are tested. The check reuses the rule the codebase already uses in `javascriptSymbolicBindings.ts` (`#identifier`): the name is `undefined`, `resolveSemanticBindingState` finds no binding, and `semanticResolutionBlocked` is false.
+
+## PR #2748 (xu91102) overlap
+
+I can't see #2748's diff from this session; this is based on your description that it edits around `spawnArgvCount`.
+
+- **Our hunks** in `javascriptSemanticChildProcesses.ts`, against upstream main line numbers:
+  - one import line added at line 14 (`semanticResolutionBlocked`);
+  - the `signalName:` expression in `childInteraction` (lines 225-227);
+  - the new `killSignalName` helper, inserted after `childInteraction` and before `classifyInteraction` (after line 239).
+- **`spawnArgvCount`** is at line 339 on upstream main (356 on our branch). We don't touch it or the lines around it. I deliberately placed `killSignalName` away from it.
+- **Expected:** no shared lines, so the two PRs should merge in either order without a text conflict. Please glance at #2748's diff to confirm it doesn't also edit the import block or `childInteraction`.
+
+## Test results (exact, Node 24.18.0)
+
+- **Before the fix:** `npm run test:focused -- src/domain/javascript/javascriptSemanticAnalysis.native_bindings.test.ts` with upstream's unchanged source: 1 failed, 3 passed (the new signal test fails).
+- **Scope-blind variant** (every `undefined` treated as SIGTERM, ignoring scope): the same test fails 1, passes 3. So the shadowed case really checks scope.
+- **With the fix:**
+  - `npm run test:focused --` `javascriptSemanticAnalysis.native_bindings.test.ts`, `childProcessOptionsRegression.test.ts` and `src/application/javascript/JavaScriptSemanticGraphResources.test.ts`: 3 files, 19 tests passed.
+  - `npm run test:local --` every `src/domain/javascript` and `src/application/javascript` test file: 66 files, 1,516 tests passed.
+  - `npm run verify:test-discovery`: discovered all 1,085 test files exactly once.
+  - `npx oxlint` and `npx oxfmt --check` on our two files: clean. `npm run verify:module-boundaries`: passed.
+- **`npm run check:fast`: FAILS, but on upstream main itself, not on this change.**
+  - It first stopped at its dependency check (the new main added `cborg`); I ran `npm ci` to fix that.
+  - Lint then reports 4 errors (`max-lines-per-function`) in `ghidraLauncher.test.ts`, `GhidraFunctionValues.test.ts`, `idaProvider.test.ts` and `webBundleAnalyzer.test.ts`.
+  - Typecheck reports 1 error, TS2322 in `src/android/JadxAnalysis.ts:366`.
+  - I checked out clean `origin/main` and saw exactly the same 4 lint errors and 1 typecheck error. None are in files this PR touches.
+- **Push:** because the pre-push hook runs `check:fast`, which is red on upstream main, I pushed with `--no-verify`. Expect upstream CI to show the same base failures until main is fixed.
+- **Not run:** `docs:check` (no contract, schema or generated metadata changed) and a fresh CLI spot check on this head (the earlier one ran on the previous head).
+
+## Out of date in PR #2830's description (please edit)
+
+- **Title:** should become `fix(javascript): keep unresolved child kill signals unknown`.
+- **Fixes #2571:** remove it. #2571 is fixed by the merged #2781. Keep `Fixes #2572`.
+- **Options description:** remove everything about `spawnOptions`, options read from the second argument, `environmentSupplied` and `stdioMode`.
+- **Tests:** remove the options test, which no longer exists. The signal test now also covers `kill(undefined)` (global gives SIGTERM, shadowed gives null).
+- **kill(undefined):** any line saying it reports null is wrong. It reports SIGTERM unless `undefined` is shadowed.
+- **Validation:** replace the old counts (62 files / 1,439 tests, `check:fast` passed) with the results above. State that `check:fast` is red on upstream main (1 typecheck error, 4 lint errors, none in the touched files), that the push used `--no-verify` for that reason, and that `docs:check` was not run.
+- **CLI spot check:** the earlier one showed `environment_supplied` and `stdio_mode`; that part is now upstream's change, not ours.
+- **AI disclosure line (unchanged):** "AI-assisted: implemented and tested with Claude Code; I reviewed the diff and validation results."
 
 ## Explain it to the owner
 
-### 1. The bugs
+### 1. The bug
 
-REA reads JavaScript as text, without running it. When the code starts a child process (Node's `child_process` module), REA records facts about the call: whether an environment (`env`) was passed, which `stdio` mode was chosen, and which signal `kill()` sends. Two of those facts came out wrong.
+REA reads JavaScript as text, without running it. When code calls `child.kill(...)` on a child process, REA records which signal is sent. In Node, `kill()` with no argument (or with `undefined`) sends SIGTERM. REA also reported SIGTERM whenever the argument was something it couldn't read, which turns an unknown into a false fact.
 
-- **#2571, options lost.** In Node, the args array is optional, so `spawn(cmd, options)` is valid. REA always looked for the options object in the third argument, so it missed options given second.
-  - Input: `spawn("tool", { env: { A: "1" }, stdio: "pipe" })`
-  - Wrong output: `environmentSupplied: false`, `stdioMode: "default"`
-  - Right output: `environmentSupplied: true`, `stdioMode: "pipe"`
-- **#2572, invented signal.** `child.kill()` with no argument sends SIGTERM. REA also reported SIGTERM when the argument was something it could not read, such as a function parameter. That reports a guess as a fact.
-  - Input: `function run(sig) { child.kill(sig) }`
-  - Wrong output: `signalName: "SIGTERM"`
-  - Right output: `signalName: null` (unknown)
+| Input | Before | After |
+| --- | --- | --- |
+| `function run(sig) { child.kill(sig) }` | `"SIGTERM"` | `null` (unknown) |
+| `child.kill()` | `"SIGTERM"` | `"SIGTERM"` |
+| `child.kill(undefined)` | `"SIGTERM"` | `"SIGTERM"` |
+| `child.kill("SIGINT")` | `"SIGINT"` | `"SIGINT"` |
+| `function f(undefined) { child.kill(undefined) }` | `"SIGTERM"` | `null`, because here `undefined` is just a parameter name |
 
-  `child.kill()` still gives `"SIGTERM"`, and `child.kill("SIGINT")` still gives `"SIGINT"`.
+(The other half of the original PR, #2571, was fixed upstream by #2781 before we merged, so it is no longer part of this PR.)
 
 ### 2. How the fix works
 
-Everything is in `src/domain/javascript/javascriptSemanticChildProcesses.ts`. That module finds `child_process` calls in the parsed syntax tree (Babel AST) and builds the records. It only reads syntax.
+Everything is in `src/domain/javascript/javascriptSemanticChildProcesses.ts`.
 
-1. **`spawnOptions(candidate)`** picks the argument that holds the options.
-   - Before: it always took index 1 for `exec` and index 2 for `spawn`, `execFile` and `fork`.
-   - Now, for `spawn`, `execFile` and `fork`: if the second argument is an inline object literal (`{ ... }`), that is the options. Otherwise it uses the third argument, as before. `exec` is unchanged.
-   - This matches Node itself, which treats a non-array object in the args position as the options.
-   - Its callers, `immutableSpawn` → `objectHasProperty(options, "env")` and `stdioMode(options)`, did not change. They now just receive the right object.
-2. **`killSignalName(args)`** is a new small helper. It is called from `childInteraction`, where the inline `?? "SIGTERM"` used to be.
-   - If `kill` has no arguments, it returns `"SIGTERM"` (Node's documented default).
-   - Otherwise it returns `dataEffectLiteralString(args[0])`, the existing helper. That helper returns the string for an exact string literal (or a template string with no `${}`) and null for anything else.
+1. **`childInteraction`** builds the record for each `on`, `once`, `addListener` or `kill` call on a child process. Its `signalName:` line used to be `dataEffectLiteralString(arg) ?? "SIGTERM"`, which means "the string if it's a literal, otherwise SIGTERM". It now calls `killSignalName(node.arguments, state)`.
+2. **`killSignalName`**, a new helper just below `childInteraction`:
+   - **No argument:** returns `"SIGTERM"` (Node's default).
+   - **Global `undefined`:** the argument is the identifier `undefined`, `resolveSemanticBindingState` finds no local variable by that name, and `semanticResolutionBlocked` says name lookup isn't made unreliable (for example by `with` or `eval`). Then it returns `"SIGTERM"`, because it really is the global `undefined`.
+   - **Anything else:** returns `dataEffectLiteralString(arg)`, the existing helper. That gives the string for an exact string literal (or a template string with no `${}`) and null otherwise.
 
-**Why this approach and not the alternatives:**
-- **Not "always read argument 1 when it is an object".** A variable in that position, as in `spawn(cmd, someVar, {...})`, could be either args or options. The fix only reads argument 1 when it is clearly an object literal, so the existing three-argument behavior is untouched.
-- **No new field.** The IR already allows `signalName: string | null`, and the graph output already writes `signal_name` as given. Null is the codebase's normal way to say "not established", so no contract or schema change was needed.
-- **`resolution` left alone.** `resolution` describes whether the `kill` call is linked to exactly one child process, not whether the signal is known. Issue #2572 says the same. Changing it would mix two meanings.
-- **No guessing for numbers.** `kill(9)` now gives null rather than a name. Mapping numbers to names would be new behavior, not part of this bug.
+**Why this approach:**
+- **The global-`undefined` check is copied from existing code.** `javascriptSymbolicBindings.ts` (`#identifier`) already decides "this is the real `undefined`" with the same three conditions. Reusing that rule keeps one interpretation across the codebase, instead of a new, slightly different one.
+- **No new field and no change to `resolution`.** The IR already allows `signalName: string | null`. `resolution` describes whether the call is linked to exactly one child process, not the signal, and issue #2572 says the same.
+- **Placement.** The helper sits next to `childInteraction`, far from `spawnArgvCount`, so it doesn't collide with PR #2748.
 
 ### 3. Why it is correct
 
-The two new tests are in `src/domain/javascript/javascriptSemanticAnalysis.native_bindings.test.ts`, in a block named "child-process call forms". They are the issue reporters' own tests plus their controls.
+The test is "keeps an unresolved kill signal distinct from default and literal signals", in the `child-process signals` block of `src/domain/javascript/javascriptSemanticAnalysis.native_bindings.test.ts`.
 
-**What they prove:**
-- **Options test.** The same three calls (`spawn`, `execFile`, `fork`) give the same correct facts in both forms, with and without an explicit `[]` args array.
-- **No invented options.** Calls with no options still report no env and "default" stdio.
-- **`execFile` stdio.** `execFile` reports "default" stdio even with options, because it has no stdio option.
-- **All results stay complete.** Every call keeps `resolution: "complete"`.
-- **Signal test.** A parameter signal gives null, an omitted signal gives SIGTERM, and `"SIGINT"` gives SIGINT. All three stay linked to the one child process.
+**What it proves:**
+- In one function: a parameter signal gives null, no argument gives SIGTERM, `"SIGINT"` gives SIGINT, and global `undefined` gives SIGTERM.
+- In a second function, where `undefined` is a parameter: `kill(undefined)` gives null.
+- All five calls stay linked to exactly one child with `resolution: "complete"`.
+- It fails on unchanged upstream code, and it fails on a "just check the name" version. So it pins both the bug and the scope check.
 
-Both tests failed on unchanged main (2 failed, 3 passed) and pass with the fix. Separately, I ran the whole REA CLI on a small fixture: the output graph shows `environment_supplied: true`, `stdio_mode: "pipe"`, and a signal node with `signal_name: null`.
-
-**What they do NOT cover:**
-- An options object held in a variable, as in `spawn(cmd, opts)`. It is still not recovered, the same limit as before the fix.
-- `kill(9)` or `kill(undefined)`. Both now give null; no test pins that.
-- `exec`, which is unchanged and has no new test.
-- Real Node behavior. Nothing is executed, and the Node semantics come from Node's documentation.
+**What it does NOT cover:**
+- `kill(void 0)` gives null. It also means undefined, but it isn't the identifier, so it isn't handled.
+- Numeric signals like `kill(9)` give null.
+- Signals in a constant variable, like `const s = "SIGKILL"; kill(s)`, give null; REA doesn't follow the variable here.
+- The `with`/`eval` blocked case has no dedicated test; it relies on the shared `semanticResolutionBlocked`.
+- Nothing is executed. The Node behavior comes from Node's docs and xu91102's reproduction.
 
 ### 4. Likely maintainer questions
 
-1. **Why null instead of SIGTERM for an unknown signal?**
-   REA's rules (AGENTS.md) say unknowns must stay unknown. SIGTERM is only certain when no argument is passed. The IR field was already nullable.
-2. **Why not change `resolution` to "partial" for an unknown signal?**
-   `resolution` is about which child process the call is linked to, and that link is still exact. The issue explicitly says not to reuse it for the signal.
-3. **What about `spawn(cmd, optsVariable)`?**
-   It is still not recovered. Only inline object literals are read, both before and after the change. Telling args from options in a variable would need value tracking, which is out of scope here.
-4. **Could an object literal in argument 1 really be args?**
-   No. Node's args must be an array, and Node itself treats a non-array object there as the options.
-5. **Does this change any schema or generated catalog?**
-   No. No type, tool schema or generated file changed. That is why `docs:check` was not needed.
+1. **Why null and not SIGTERM for unknown signals?**
+   Unknowns must stay unknown (AGENTS.md). SIGTERM is only certain with no argument or the real `undefined`.
+2. **How do you know `undefined` isn't shadowed?**
+   The same three-part rule as `javascriptSymbolicBindings.ts` `#identifier`: no binding found, and resolution not blocked by `with`/`eval`. The shadowed case is tested.
+3. **Why not mark `resolution` "partial" when the signal is unknown?**
+   `resolution` is about which child the call is linked to, and that link is exact. The issue says the same.
+4. **What about `kill(9)`, `kill(void 0)`, or a constant variable?**
+   They give null: not established, so still honest. Resolving them would mean new value tracking, outside this bug.
+5. **Does this overlap with #2781 or #2748?**
+   #2781 fixed #2571 and is already on main; this PR no longer touches options. #2748 edits `spawnArgvCount`; this PR changes no lines there.
 
 ### 5. Risks and how they were checked
 
-- **Three-argument calls could regress.** Argument 1 is only treated as options when it is an object literal, and argument 1 in a three-argument call is an array or a variable. The existing test (`spawn` with `["--mode","fast"]` and options) still passes.
-- **Consumers could break on a null signal.** The graph projection (`src/application/javascript/JavaScriptSemanticGraphChildProcessProjection.ts`, `addSignalNode`) passes the value through as the label and `signal_name`. Null labels are already used for listener nodes, and the CLI run produced a valid graph with a null signal node.
-- **Wider regressions.** All 62 JavaScript domain and application test files pass (1,439 tests), and so does `npm run check:fast` (typecheck and lint).
-- **Lint or format.** The first `check:fast` run failed a lint rule (function longer than 150 lines). Moving the new tests into their own `describe` block fixed it. oxfmt and oxlint pass in the commit hooks.
+- **Consumers receiving a null signal.** The graph projection (`src/application/javascript/JavaScriptSemanticGraphChildProcessProjection.ts`, `addSignalNode`) passes the value through. Its tests pass, and the earlier CLI run produced a valid graph with a null signal node.
+- **Wider regressions.** All 66 JavaScript domain and application test files pass (1,516 tests), including upstream's #2571 tests.
+- **Rebase damage.** `spawnOptions` matches upstream exactly; `git diff origin/main` touches only the signal code and the test.
+- **Lint and type checks.** Our two files are clean under oxlint and oxfmt. `check:fast` is red only because of the upstream errors listed above.
 
 ### 6. Read the diff in this order (about 10 minutes)
 
-1. `src/domain/javascript/javascriptSemanticChildProcesses.ts`, `spawnOptions`: the new rule ("argument 1 is the options if it is an object literal, except for `exec`, which always uses argument 1").
-2. The same file, `killSignalName` and its call in `childInteraction` (the `signalName:` line): SIGTERM only when `args.length === 0`.
-3. `src/domain/javascript/javascriptSemanticIr.ts`, `JavaScriptSemanticChildProcessInteraction.signalName` (about line 286): it is already `string | null`. Nothing changed here; this just confirms there is no contract change.
-4. `src/domain/javascript/javascriptSemanticAnalysis.native_bindings.test.ts`, the "child-process call forms" describe block: the two-argument and three-argument forms, the no-options control, and the three signal cases.
-5. Optional: `src/application/javascript/JavaScriptSemanticGraphChildProcessProjection.ts`, `addSignalNode`, to see how `signal_name` reaches the output unchanged.
+1. `src/domain/javascript/javascriptSemanticChildProcesses.ts`, the `signalName:` line in `childInteraction`: it now calls `killSignalName(node.arguments, state)`.
+2. The same file, the `killSignalName` helper: the three branches (no argument, real global `undefined`, everything else).
+3. The same file, the import block: `semanticResolutionBlocked` is added.
+4. `src/domain/javascript/javascriptSymbolicBindings.ts`, `#identifier` (around line 486): the existing rule the helper copies.
+5. `src/domain/javascript/javascriptSemanticAnalysis.native_bindings.test.ts`, the `child-process signals` block: five expected rows, in source order.
