@@ -1,7 +1,6 @@
 STATUS: DONE - maintainer pushed to the PR branch (head 4c51319); all checks green there; nothing for me to push
-UPDATED: 2026-10-14T05:57:09Z
+UPDATED: 2026-10-14T06:01:18Z
 BRANCH: contrib/child-process-call-facts
-MODE: Auto
 
 ## What changed since my last update
 
